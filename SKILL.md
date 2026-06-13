@@ -87,46 +87,11 @@ agy -p "generate image..." --add-dir /path/to/output --dangerously-skip-permissi
 
 ## 管道总览
 
-### Linear 模式（串行 — 默认）
-
-```
-Step 1: 源文档处理
-  ↓
-Step 2: Strategist 设计（Eight Confirmations）
-  ↓
-Step 3: agy CLI 自动化配图（Antigravity CLI → Gemini）
-  ↓
-Step 4: OfficeCLI 构建 PPTX（含 XTS 字体规则）
-  ↓
-Step 5: 质检与预览
-  ↓
-Step 6: 交付
-```
-
-### Workflow 模式（并行 — ≥6 张图片时推荐）
-
-```
-Step 1: 源文档处理
-  ↓
-Step 2: Strategist 设计（Eight Confirmations）
-  ↓
-Step 2d: 选择 Workflow 模式 → 生成 workflow script
-  ↓
-┌──────────────────────────────────────────────────┐
-│         Workflow 工具（后台并行执行）               │
-│                                                  │
-│  Phase 1: 图片并行生成 — N 个 agent 并行            │
-│    agy CLI → Gemini，每张图片独立 agent              │
-│                                                  │
-│  Phase 2: 幻灯片串行构建 — 单个 agent                │
-│    OfficeCLI 逐页构建，batch 模式高效处理             │
-│                                                  │
-│  Phase 3: 质检并行 — 3 个 agent 并行                │
-│    OOXML 验证 + 问题检查 + 预览截图                   │
-└──────────────────────────────────────────────────┘
-  ↓
-Step 6: 交付
-```
+使用 Agent 后台任务 (manage_task / invoke_subagent) 动态实现并发：
+1. 源文档处理与方案确认
+2. 并行调用 agy 生成配图
+3. OfficeCLI 串行构建 PPTX
+4. 多模态视觉质检与矫正
 
 ---
 
@@ -206,56 +171,6 @@ FONTS: heading="PingFang SC", body="PingFang SC", en="Arial"
 SLIDES: [封面, 目录, Ch1..., Ch2..., ...]
 IMAGES: [cover_bg.png, diagram1.png, ...]
 ```
-
-### macOS：AppleScript 确认对话框
-
-```applescript
-display dialog "确认以下设计方案？\n\n画布：16:9 (33.87cm×19.05cm)\n页数：约 12 页\n风格：商务专业\n配色：#1A3A5C + #0099CC" \
-    buttons {"修改", "确认"} default button "确认" with title "PPT 设计方案确认" with icon note
-```
-
-### 2d. 选择执行模式
-
-用户确认设计后，根据 **图片数量** 自动推荐执行模式：
-
-| 条件 | 推荐模式 | 理由 |
-|------|---------|------|
-| 图片数 < 6 张 | **Linear 模式** | 图片少，并行优势不明显，串行更简单可靠 |
-| 图片数 ≥ 6 张 | **Workflow 模式** | 多图片可并行生成，节省 50-70% 总时间 |
-| 用户明确要求并行 | **Workflow 模式** | 尊重用户选择 |
-| 用户明确要求串行 | **Linear 模式** | 尊重用户选择 |
-
-**询问用户确认**，记录所选模式后，输出完整的 design spec JSON（供后续执行使用）：
-
-```json
-{
-  "outputDir": "<output_dir>",
-  "pptxPath": "<output_dir>/presentation.pptx",
-  "imagesDir": "<output_dir>/images/",
-  "colors": { "primary": "#...", "accent": "#...", "bg": "#...", "text": "#..." },
-  "fonts": { "heading": "...", "body": "...", "en": "..." },
-  "canvas": { "width": "33.87cm", "height": "19.05cm" },
-  "images": [
-    { "filename": "cover_bg.png", "prompt": "...", "type": "cover", "minWidth": 1920, "minHeight": 1080 },
-    ...
-  ],
-  "slides": [
-    { "index": 1, "type": "cover", "background": "#...", "shapes": [...] },
-    ...
-  ],
-  "retryFailedImages": true
-}
-```
-
-**如果选择 Linear 模式** → 继续执行下方 Step 3→4→5。
-**如果选择 Workflow 模式** → 跳转到 [Workflow 模式执行路径](#workflow-模式执行路径)，跳过 Linear 模式的 Step 3-5。
-
----
-
-## Linear 模式执行路径
-
-> 以下 Step 3–5 为 **Linear 模式**（串行执行）使用。
-> 如果用户选择了 Workflow 模式，跳过此部分，直接跳转到 [Workflow 模式执行路径](#workflow-模式执行路径)。
 
 ## Step 3: agy CLI 自动化配图
 
@@ -352,8 +267,6 @@ sips -g pixelWidth -g pixelHeight <output_dir>/images/<filename>.jpg
 **Step 4: 后处理**
 
 ```bash
-# 统一转 PNG（PPT 最佳兼容格式）
-sips -s format png image.jpg --out image.png 2>/dev/null
 ```
 
 ### 3.2 图片路径初始化
@@ -468,19 +381,7 @@ echo "完成: $SUCCESS 张成功"
 ### 3.7 图片后处理
 
 ```bash
-# 统一格式为 PNG
-sips -s format png image.jpg --out image.png 2>/dev/null
-
-# 批量验证分辨率（PPT 全页图片至少 1920×1080）
-for img in <output_dir>/images/*.png; do
-  width=$(sips -g pixelWidth "$img" 2>/dev/null | tail -1 | awk '{print $2}')
-  height=$(sips -g pixelHeight "$img" 2>/dev/null | tail -1 | awk '{print $2}')
-  if [ "$width" -lt 800 ] || [ "$height" -lt 600 ]; then
-    echo "⚠️ $img 分辨率过低 (${width}x${height})，需重新生成"
-  else
-    echo "✅ $img (${width}x${height})"
-  fi
-done
+# PPT 原生支持 JPG/PNG/WebP，保留原格式即可。
 ```
 
 ### 3.8 备用图片路径
@@ -511,7 +412,7 @@ display notification "正在生成图片 3/8：封面背景图..." with title "P
 
 | # | 问题 | 现象 | 正确做法 |
 |---|------|------|---------|
-| 1 | `officecli create` 创建 0 张 slide | 预期有 1 张默认页，实际为空 | slide 编号从 0 开始，或先 `add` 第一张 slide 再操作 |
+| 1 | `officecli create` 创建 0 张 slide | 预期有 1 张默认页，实际为空 | slide 编号从 1 开始（/slide[1] 为第一页），或先 `add` 第一张 slide 再操作 |
 | 2 | `officecli set / --prop background=...` 失败 | presentation 级别无 background 属性 | **必须在每张 slide 上单独设置** background，不能在根路径 `/` 设置 |
 | 3 | `bash set -e` + OfficeCLI 非零退出码 | OfficeCLI 某些命令返回非零但实际成功（如 set 无匹配时），`set -e` 导致整个脚本静默退出 | **禁止在 OfficeCLI 脚本中使用 `set -e`**，改用 `|| true` 容错 |
 | 4 | `declare -A` 关联数组 | macOS 默认 bash 3.x 不完全支持 bash 4 的关联数组语法 | 避免使用 `declare -A`，改用普通数组或字符串拼接 |
@@ -539,7 +440,7 @@ officecli create "$PPTX" || true
 
 # 构建 slide 1
 officecli add "$PPTX" / --type slide --prop layout=blank --prop background=#F7F8FA || true
-officecli add "$PPTX" '/slide[0]' --type shape \
+officecli add "$PPTX" '/slide[1]' --type shape \
   --prop text="封面标题" \
   --prop x=3cm --prop y=6cm --prop width=27cm --prop height=3cm \
   --prop font="PingFang SC" --prop size=48 --prop bold=true \
@@ -940,6 +841,12 @@ done
 ---
 
 ## Step 5: 质检与预览
+
+利用 qlmanage -t 生成预览，或调用 AppleScript 截图，结合 Agent 视觉能力检查元素重叠。
+
+
+利用 qlmanage -t 生成预览，或调用 AppleScript 截图，结合 Agent 视觉能力检查元素重叠。
+
 
 ### 5.1 内置质检
 
@@ -1380,3 +1287,10 @@ Professional abstract illustration representing teamwork and collaboration, dive
 此 skill 集成了以下持久化记忆中的规则：
 - `ppt-master-font-requirements` — 字号缩放映射 + 防重叠规则（已适配 pt 单位）
 - XTS 字体放大规则来自原版 ppt-from-document-xts skill
+
+
+## Step 5: 多模态视觉自查 (Multimodal Verification)
+使用  提取封面缩略图，结合视觉能力检查文字是否重叠，背景是否匹配。
+
+## Step 5: 多模态视觉自查 (Multimodal Verification)
+使用 `qlmanage -t <file.pptx> -s 1600 -o /tmp` 提取封面缩略图，结合视觉能力检查文字是否重叠，背景是否匹配。
